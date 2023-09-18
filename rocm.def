@@ -1,7 +1,22 @@
 Bootstrap: docker
-From: rocm/pytorch:latest
+From: rocm/pytorch:rocm5.4.2_ubuntu20.04_py3.8_pytorch_2.0.0_preview
 
 %post
+# Install libfabric and aws-ofi-rccl
+# wget https://github.com/ofiwg/libfabric/releases/download/v1.19.0/libfabric-1.19.0.tar.bz2
+# tar xf libfabric-1.19.0.tar.bz2
+# rm libfabric-1.19.0.tar.bz2 
+# cd libfabric-1.19.0
+# ./configure --prefix /opt/libfabric
+# make -j 20
+# make install
+# cd ..
+# git clone https://github.com/ROCmSoftwarePlatform/aws-ofi-rccl
+# cd aws-ofi-rccl
+# ./autogen.sh
+# CC=cc ./configure --with-libfabric=/opt/cray/libfabric/1.15.0.0 --with-hip=/opt/rocm-5.6.0 --with-rccl=/opt/rocm-5.6.0/rccl
+
+
 # Install llm-foundry
 git clone https://github.com/rlrs/llm-foundry
 cd llm-foundry
@@ -9,14 +24,14 @@ cp train.sh /train.sh
 pip install cmake packaging typing-extensions==4.7.1 "numpy~=1.21.0"
 pip install -e .
 pip install git+https://github.com/rlrs/composer --upgrade # patches for pytorch 2.1 are needed
-pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm5.6 --upgrade
+pip3 install --pre torch torchvision torchtext --index-url https://download.pytorch.org/whl/nightly/rocm5.4.2 --upgrade
 
 # Install flash-attention for ROCm
-cd /
-git clone --recurse-submodules -j8 -b flash_attention_for_rocm https://github.com/ROCmSoftwarePlatform/flash-attention.git
-cd flash-attention
-git reset --hard 4619d9c25a214b28ba6f11319ce8dfe3d194c177
-# patch /opt/conda/envs/py_3.8/lib/python3.8/site-packages/torch/utils/hipify/hipify_python.py /llm-foundry/hipify_patch.patch # custom patch for newest pytorch
-# patch /opt/conda/envs/py_3.8/lib/python3.8/site-packages/torch/utils/hipify/hipify_python.py hipify_patch.patch
-python setup.py install
-ln -s /opt/rocm-5.6.0/lib/msccl-algorithms /opt/conda/envs/py_3.8/lib/python3.8/site-packages/torch/lib/msccl-algorithms # bug fix?
+# cd /
+# git clone --recurse-submodules -j8 -b flash_attention_for_rocm https://github.com/ROCmSoftwarePlatform/flash-attention.git
+# cd flash-attention
+# git reset --hard 4619d9c25a214b28ba6f11319ce8dfe3d194c177
+# # patch /opt/conda/envs/py_3.8/lib/python3.8/site-packages/torch/utils/hipify/hipify_python.py /llm-foundry/hipify_patch.patch # custom patch for newest pytorch
+# # patch /opt/conda/envs/py_3.8/lib/python3.8/site-packages/torch/utils/hipify/hipify_python.py hipify_patch.patch
+# python setup.py install
+# ln -s /opt/rocm-5.6.0/lib/msccl-algorithms /opt/conda/envs/py_3.8/lib/python3.8/site-packages/torch/lib/msccl-algorithms # bug fix?
