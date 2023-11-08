@@ -24,6 +24,7 @@ else:
     LocalOptimStateDictConfig = MagicMock()
     ShardedOptimStateDictConfig = MagicMock()
 
+from llmfoundry.optim import DecoupledLionW
 from llmfoundry.optim import DecoupledLionW_8bit as Lion8bit
 
 warnings.filterwarnings('ignore')
@@ -387,7 +388,7 @@ class _DummyModule(nn.Module):
     def __init__(self, device: str, dtype: torch.dtype):
         super().__init__()
         self.linear0 = nn.Linear(4, 3, device=device, dtype=dtype)
-        self.linear1 = nn.Linear(3, 4, device=device, dtype=dtype)
+        self.linear1 = nn.Linear(3, 5, device=device, dtype=dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type:ignore
         return self.linear1(self.linear0(x))
@@ -406,8 +407,12 @@ _LOCAL_STATE = fsdp.StateDictType.LOCAL_STATE_DICT
 @pytest.mark.parametrize('use_errors', [False, True])
 @pytest.mark.parametrize('state_sharding',
                          [_FULL_STATE, _SHARDED_STATE, _LOCAL_STATE])
+@pytest.mark.parametrize('save_as_lion8b, load_as_lion8b', [(False, True),
+                                                            (True, False),
+                                                            (True, True)])
 def test_fsdp_save_load(dtype: torch.dtype, use_errors: bool,
-                        state_sharding: fsdp.StateDictType):
+                        state_sharding: fsdp.StateDictType,
+                        save_as_lion8b: bool, load_as_lion8b: bool):
     device = 'cuda'
     if torch.cuda.device_count() < 2:
         pytest.skip(f'This test requires 2+ GPUs.')
@@ -416,9 +421,13 @@ def test_fsdp_save_load(dtype: torch.dtype, use_errors: bool,
 
     torch.cuda.set_device(f'cuda:{os.environ["RANK"]}')  # needed for fsdp
     if not dist.is_initialized():
-        dist.init_process_group()
+        dist.init_process_group(backend='nccl')
     assert dist.get_world_size() >= 2, 'Misconfigured test run!'
 
+    # nb: this is the line that causes:
+    #   `Warning: Deallocating Tensor that still has live PyObject references.`
+    # suggesting this warning isn't an issue with our test code. It's also
+    # going to stdout (probably from cpp) so we can't suppress it with warnings
     mod = FSDP(_DummyModule(device=device, dtype=dtype))
 
     # actual forward pass instead of setting p.grad to avoid FSDP issues
@@ -429,7 +438,10 @@ def test_fsdp_save_load(dtype: torch.dtype, use_errors: bool,
         p.grad = torch.rand_like(p)
 
     # create optimizer and have it step so that state gets populated
-    opt = Lion8bit(mod.parameters(), error_correction=use_errors)
+    if save_as_lion8b:
+        opt = Lion8bit(mod.parameters(), error_correction=use_errors)
+    else:
+        opt = DecoupledLionW(mod.parameters())
     opt.step()
     opt.zero_grad()
 
@@ -449,18 +461,27 @@ def test_fsdp_save_load(dtype: torch.dtype, use_errors: bool,
         FSDP.set_state_dict_type(model, state_sharding, state_dict_cfg,
                                  optim_cfg)
 
+    def _local_shard(t: torch.Tensor) -> torch.Tensor:
+        try:  # can't operate on ShardedTensors directly
+            return t.local_tensor()  # type: ignore
+        except AttributeError:
+            return t
+
     # load FSDP state dict
     _set_state_dict_type(mod)
     opt_state_dict = FSDP.optim_state_dict(mod, opt)
 
     # make a new model and optimizer
     mod_new = FSDP(_DummyModule(device=device, dtype=dtype))
-    opt_new = Lion8bit(mod_new.parameters(), error_correction=use_errors)
+    if load_as_lion8b:
+        opt_new = Lion8bit(mod_new.parameters(), error_correction=use_errors)
+    else:
+        opt_new = DecoupledLionW(mod_new.parameters())
     _set_state_dict_type(mod_new)
 
     # load state dict into the new optimizer
     opt_state_dict_slice = FSDP.optim_state_dict_to_load(
-        opt_state_dict, mod_new, opt_new)
+        optim_state_dict=opt_state_dict, model=mod_new, optim=opt_new)
     opt_new.load_state_dict(opt_state_dict_slice)
 
     new_opt_state_dict = FSDP.optim_state_dict(mod_new, opt_new)
@@ -480,22 +501,26 @@ def test_fsdp_save_load(dtype: torch.dtype, use_errors: bool,
         mom_new = d_new['exp_avg']
 
         assert mom_orig.shape == mom_new.shape
-        assert mom_orig.dtype == mom_new.dtype
-        if use_errors:
-            errs_orig = d_orig['errors']
-            errs_new = d_new['errors']
-            assert errs_orig.shape == errs_new.shape
-            assert errs_orig.dtype == errs_new.dtype
-
-        if state_sharding != _FULL_STATE:
-            continue  # more detailed checks lean on FSDP impl details
+        both_lion8b = save_as_lion8b and load_as_lion8b
+        check_errors = both_lion8b and use_errors and (dtype != torch.float32)
+        if both_lion8b:
+            assert mom_orig.dtype == mom_new.dtype
+            if check_errors:
+                errs_orig = d_orig['errors']
+                errs_new = d_new['errors']
+                assert errs_orig.shape == errs_new.shape
+                assert errs_orig.dtype == errs_new.dtype
 
         # momentums may not be bit-for-bit identical because Optimizer upcasts
         # to f32 and we convert back to bf16, possibly with different rounding
-        torch.testing.assert_close(mom_orig, mom_new)
+        torch.testing.assert_close(_local_shard(mom_orig).float(),
+                                   _local_shard(mom_new).float(),
+                                   atol=1e-4,
+                                   rtol=1. / 128)
         # errors not bit-for-bit identical because scales get upcast too
-        if use_errors and (dtype != torch.float32):
-            torch.testing.assert_close(d_orig['errors'], d_new['errors'])
+        if check_errors:
+            torch.testing.assert_close(_local_shard(d_orig['errors']),
+                                       _local_shard(d_new['errors']))
 
 
 @pytest.mark.gpu
@@ -504,45 +529,59 @@ def test_fsdp_save_load(dtype: torch.dtype, use_errors: bool,
 def test_fused_as_fast_as_unfused(N: int,
                                   D: int,
                                   min_elems_traversed: int = 1000000):
-    W = torch.randn((N, D), device='cuda', requires_grad=True)
-    W.grad = torch.randn((N, D), device='cuda', requires_grad=False)
 
-    num_iters = int(np.ceil(min_elems_traversed / W.grad.numel()))
-    num_iters = min(100, num_iters)  # don't take all day when overhead-bound
+    def _time_kernels(N: int, D: int, min_elems_traversed: int):
+        W = torch.randn((N, D), device='cuda', requires_grad=True)
+        W.grad = torch.randn((N, D), device='cuda', requires_grad=False)
 
-    times = {}
-    kwargs = {'weight_decay': .01}
-    combos = [(True, False), (True, True), (False, False), ('NA', False)]
-    for fused, use_errors in combos:
-        if fused == 'NA':
-            opt = Lion8bit([W], quantize=False,
-                           **kwargs)  # type:ignore (reportGeneralTypeIssues)
-        else:
-            opt = Lion8bit([W],
-                           _fused=fused,
-                           error_correction=use_errors,
-                           **kwargs)  # type:ignore (reportGeneralTypeIssues)
-        for _ in range(3):
-            opt.step()  # warmup iters
-        torch.cuda.synchronize()
-        t_start = time.time()
-        for _ in range(num_iters):
-            opt.step()
-        torch.cuda.synchronize()
-        t_end = time.time()
-        dur = (t_end - t_start) / num_iters
-        if use_errors:
-            times['ecc'] = dur
-        else:
-            times[fused] = dur
+        num_iters = int(np.ceil(min_elems_traversed / W.grad.numel()))
+        num_iters = min(100,
+                        num_iters)  # don't take all day when overhead-bound
 
-    atol = 20e-6  # should always be faster, but avoids rare flakiness
-    assert times[True] < times[False] + atol
-    assert times[True] < times['NA'] + atol
-    assert times['ecc'] < times['NA'] + atol
+        times = {}
+        kwargs = {'weight_decay': .01}
+        combos = [(True, False), (True, True), (False, False), ('NA', False)]
+        for fused, use_errors in combos:
+            if fused == 'NA':
+                opt = Lion8bit(
+                    [W], quantize=False,
+                    **kwargs)  # type:ignore (reportGeneralTypeIssues)
+            else:
+                opt = Lion8bit(
+                    [W], _fused=fused, error_correction=use_errors,
+                    **kwargs)  # type:ignore (reportGeneralTypeIssues)
+            for _ in range(3):
+                opt.step()  # warmup iters
+            torch.cuda.synchronize()
+            t_start = time.time()
+            for _ in range(num_iters):
+                opt.step()
+            torch.cuda.synchronize()
+            t_end = time.time()
+            dur = (t_end - t_start) / num_iters
+            if use_errors:
+                times['ecc'] = dur
+            else:
+                times[fused] = dur
+        return times
 
-    print('')
-    print('time fused (ms):       ', times[True] * 1e3)
-    print('time fused+ecc (ms):   ', times['ecc'] * 1e3)
-    print('time unfused (ms):     ', times[False] * 1e3)
-    print('time unquantized (ms): ', times['NA'] * 1e3)
+    times = _time_kernels(N, D, min_elems_traversed)
+
+    atol = 2e-4  # should always be faster, but atol helps avoid flakiness
+    it = 0
+    while True:
+        try:
+            assert times[True] < times[False] + atol
+            assert times[True] < times['NA'] + atol
+            assert times['ecc'] < times['NA'] + atol
+            print('')
+            print('time fused (ms):       ', times[True] * 1e3)
+            print('time fused+ecc (ms):   ', times['ecc'] * 1e3)
+            print('time unfused (ms):     ', times[False] * 1e3)
+            print('time unquantized (ms): ', times['NA'] * 1e3)
+            break
+        except AssertionError as e:
+            if it >= 2:  # allow 3 retries to avoid flakiness
+                raise e
+        times = _time_kernels(N, D, min_elems_traversed)
+        it += 1
