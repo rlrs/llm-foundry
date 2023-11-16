@@ -51,7 +51,7 @@ install_requires = [
     'accelerate>=0.20,<0.21',  # for HF inference `device_map`
     'transformers>=4.34.1,<4.35',
     'mosaicml-streaming>=0.7.1,<0.8',
-    'torch>=1.13.1,<2.1.1',
+    #'torch>=1.13.1,<2.1.1',
     'datasets>=2.14.5,<2.15',
     'fsspec==2023.6.0',  # newer version results in a bug in datasets that duplicates data
     'sentencepiece==0.1.97',
@@ -63,7 +63,7 @@ install_requires = [
     'onnxruntime==1.15.1',
     'cmake>=3.25.0,<=3.26.3',  # required for triton-pre-mlir below
     # PyPI does not support direct dependencies, so we remove this line before uploading from PyPI
-    'triton-pre-mlir@git+https://github.com/vchiley/triton.git@triton_pre_mlir_sm90#subdirectory=python',
+    #'triton-pre-mlir@git+https://github.com/vchiley/triton.git@triton_pre_mlir_sm90#subdirectory=python',
     'boto3>=1.21.45,<2',
     'huggingface-hub>=0.17.0,<1.0',
     'beautifulsoup4>=4.12.2,<5',  # required for model download utils
@@ -98,10 +98,10 @@ extra_deps['gpu'] = [
     'xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v1.0.9#subdirectory=csrc/xentropy',
 ]
 extra_deps['gpu-flash2'] = [
-    'flash-attn==2.3.2',
+    #'flash-attn==2.3.2',
     'mosaicml-turbo==0.0.4',
     # PyPI does not support direct dependencies, so we remove this line before uploading from PyPI
-    'xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v2.3.2#subdirectory=csrc/xentropy',
+    #'xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v2.3.2#subdirectory=csrc/xentropy',
 ]
 
 extra_deps['peft'] = [
