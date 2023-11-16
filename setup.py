@@ -47,7 +47,7 @@ classifiers = [
 ]
 
 install_requires = [
-    'git+https://github.com/rlrs/composer[wandb,mlflow]>=0.17,<0.18',
+    'composer @ git+https://github.com/rlrs/composer[wandb]',
     'accelerate>=0.20,<0.21',  # for HF inference `device_map`
     'transformers>=4.34.1,<4.35',
     'mosaicml-streaming>=0.7.1,<0.8',
