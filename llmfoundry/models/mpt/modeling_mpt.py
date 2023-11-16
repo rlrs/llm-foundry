@@ -26,12 +26,12 @@ from composer.utils import dist
 
 from llmfoundry.models.layers.attention import is_flash_v2_installed
 
-if is_flash_v2_installed():
-    try:  # This try...except is needed because transformers requires it despite the 'if' statement above
-        from flash_attn.layers.rotary import \
-            RotaryEmbedding as DAILRotaryEmbedding
-    except Exception as e:
-        pass #raise e
+#if is_flash_v2_installed():
+#    try:  # This try...except is needed because transformers requires it despite the 'if' statement above
+#        from flash_attn.layers.rotary import \
+#            RotaryEmbedding as DAILRotaryEmbedding
+#    except Exception as e:
+#        pass #raise e
 
 from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
