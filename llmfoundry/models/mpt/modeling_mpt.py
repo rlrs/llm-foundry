@@ -16,19 +16,10 @@ from typing import (Any, Dict, List, Mapping, MutableMapping, Optional, Tuple,
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from composer.metrics import (InContextLearningCodeEvalAccuracy,
-                              InContextLearningLMAccuracy,
-                              InContextLearningLMExpectedCalibrationError,
-                              InContextLearningMCExpectedCalibrationError,
-                              InContextLearningMultipleChoiceAccuracy,
-                              InContextLearningQAAccuracy)
-from composer.metrics.nlp import LanguageCrossEntropy, LanguagePerplexity
 from composer.models import HuggingFaceModel
 from composer.utils import dist
 
-from llmfoundry.metrics import TokenAccuracy
-from llmfoundry.models.layers.attention import (is_flash_v1_installed,
-                                                is_flash_v2_installed)
+from llmfoundry.models.layers.attention import is_flash_v2_installed
 from llmfoundry.models.layers.norm import NORM_CLASS_REGISTRY
 
 if is_flash_v2_installed():
@@ -38,12 +29,6 @@ if is_flash_v2_installed():
             RotaryEmbedding as DAILRotaryEmbedding
     except Exception as e:
         pass #raise e
-
-if is_flash_v1_installed():
-    try:  # This try...except is needed because transformers requires it despite the 'if' statement above
-        from flash_attn import bert_padding
-    except Exception as e:
-        raise e
 
 from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
@@ -1041,27 +1026,27 @@ class ComposerMPTCausalLM(HuggingFaceModel):
         om_model_config: DictConfig,
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
     ):
+        from llmfoundry.metrics import (DEFAULT_CAUSAL_LM_EVAL_METRICS,
+                                        DEFAULT_CAUSAL_LM_TRAIN_METRICS)
+        from llmfoundry.utils.builders import build_metric
+
         resolved_om_model_config = om.to_container(om_model_config,
                                                    resolve=True)
+        assert isinstance(resolved_om_model_config, dict)
+
         hf_config = MPTConfig.from_dict(resolved_om_model_config)
         model = MPTForCausalLM(hf_config)
 
         use_train_metrics = om_model_config.get('use_train_metrics', True)
+        train_metric_names = DEFAULT_CAUSAL_LM_TRAIN_METRICS + resolved_om_model_config.get(
+            'additional_train_metrics', [])
         train_metrics = [
-            LanguageCrossEntropy(),
-            LanguagePerplexity(),
-            TokenAccuracy()
+            build_metric(metric, {}) for metric in train_metric_names
         ] if use_train_metrics else []
+        eval_metric_names = DEFAULT_CAUSAL_LM_EVAL_METRICS + resolved_om_model_config.get(
+            'additional_eval_metrics', [])
         eval_metrics = [
-            LanguageCrossEntropy(),
-            LanguagePerplexity(),
-            TokenAccuracy(),
-            InContextLearningLMAccuracy(),
-            InContextLearningMultipleChoiceAccuracy(),
-            InContextLearningQAAccuracy(),
-            InContextLearningCodeEvalAccuracy(),
-            InContextLearningLMExpectedCalibrationError(),
-            InContextLearningMCExpectedCalibrationError(),
+            build_metric(metric, {}) for metric in eval_metric_names
         ]
 
         super().__init__(
