@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from llmfoundry.models.layers.attention import ATTN_CLASS_REGISTRY
 from llmfoundry.models.layers.ffn import FFN_CLASS_REGISTRY, build_ffn
-from llmfoundry.models.layers.norm import NORM_CLASS_REGISTRY
+from llmfoundry.models.layers.layer_builders import build_norm
 
 try:
     from flash_attn.bert_padding import unpad_input, pad_input  # type: ignore # yapf: disable # isort: skip
@@ -20,12 +20,11 @@ except:
 attn_config_defaults: Dict = {
     'attn_type': 'multihead_attention',
     'attn_pdrop': 0.0,
-    'attn_impl': 'triton',
+    'attn_impl': 'flash',
     'qk_ln': False,
     'qk_gn': False,
     'clip_qkv': None,
     'softmax_scale': None,
-    'prefix_lm': False,
     'attn_uses_sequence_id': False,
     'sliding_window_size': -1,
     'alibi': False,
@@ -73,15 +72,14 @@ class MPTBlock(nn.Module):
         del kwargs  # unused, just to capture any extra args from the config
         super().__init__()
 
-        norm_class = NORM_CLASS_REGISTRY[norm_type.lower()]
         assert isinstance(attn_config['attn_type'], str)
         attn_class = ATTN_CLASS_REGISTRY[attn_config['attn_type']]
 
         # necessary to avoid passing extraneous args into attn_class while allowing the use of **kwargs
         args_to_exclude_in_attn_class = {
-            'attn_type', 'prefix_lm', 'alibi', 'attn_uses_sequence_id',
-            'alibi_bias_max', 'rope', 'rope_theta', 'rope_impl',
-            'rope_dail_config', 'rope_hf_config'
+            'attn_type', 'alibi', 'attn_uses_sequence_id', 'alibi_bias_max',
+            'rope', 'rope_theta', 'rope_impl', 'rope_dail_config',
+            'rope_hf_config'
         }
         attn_config_subset_for_attn_class = {
             k: v
@@ -89,7 +87,11 @@ class MPTBlock(nn.Module):
             if k not in args_to_exclude_in_attn_class
         }
 
-        self.norm_1 = norm_class(d_model, device=device)
+        self.norm_1 = build_norm(
+            name=norm_type.lower(),
+            normalized_shape=d_model,
+            device=device,
+        )
         self.attn = attn_class(
             d_model=d_model,
             n_heads=n_heads,
@@ -101,7 +103,11 @@ class MPTBlock(nn.Module):
         self.norm_2 = None
         if not getattr(FFN_CLASS_REGISTRY[ffn_config['ffn_type']], '_has_norm',
                        False):
-            self.norm_2 = norm_class(d_model, device=device)
+            self.norm_2 = build_norm(
+                name=norm_type.lower(),
+                normalized_shape=d_model,
+                device=device,
+            )
         self.ffn = build_ffn(
             d_model=d_model,
             expansion_ratio=expansion_ratio,

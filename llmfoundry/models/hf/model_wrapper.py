@@ -8,7 +8,6 @@ from __future__ import annotations
 from collections import UserDict
 from typing import TYPE_CHECKING, List, Mapping, Optional
 
-import torch
 import transformers
 from composer.models.huggingface import HuggingFaceModel
 from torchmetrics import Metric
@@ -25,18 +24,8 @@ if TYPE_CHECKING:
 _HF_IGNORE_INDEX = -100
 
 
-class HuggingFaceModelWithZLoss(HuggingFaceModel):
+class HuggingFaceModelWithFSDP(HuggingFaceModel):
     """Wrapper around HuggingFaceModel.
-
-    This adds z-loss, which is used in some training contexts,
-    and is a convenient way to patch features that are generically
-    useful for HF models.
-    See use of z_loss in PaLM: https://arxiv.org/abs/2204.02311v3, Section 5.
-    Also, from https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666:
-        Two uses of z_loss are:
-        - To keep the logits from drifting too far from zero, which can cause
-            unacceptable roundoff errors in bfloat16.
-        - To encourage the logits to be normalized log-probabilities.
 
     Handles preparation for FSDP wrapping.
     """
@@ -46,7 +35,6 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
                  tokenizer: Optional[PreTrainedTokenizerBase] = None,
                  metrics: Optional[List[Metric]] = None,
                  eval_metrics: Optional[List[Metric]] = None,
-                 z_loss: float = 0.0,
                  shift_labels: bool = False,
                  init_device: Optional[str] = None,
                  peft_config: Optional['PeftConfig'] = None):
@@ -63,7 +51,10 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
         self.z_loss = float(z_loss)
         if self.z_loss < 0.0:
             raise ValueError(f'z_loss(={z_loss}) cannot be negative.')
-        self._fwd_flops = None
+        
+        n_params = sum(p.numel() for p in self.model.parameters())
+        L, H, Q, T = self.model.config.num_hidden_layers, self.model.config.num_attention_heads, self.model.config.hidden_size // self.model.config.num_attention_heads, self.model.config.sliding_window
+        self._fwd_flops = 2*n_params*T + (4*L*H*Q*(T**2))/2 # = None to use FlopCounterMode
 
         # Note: We need to add the FSDP related attributes to the model AFTER the super init,
         # so that the (possible) embedding resizing doesn't destroy them
@@ -96,27 +87,11 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
 
     def loss(self, outputs: ModelOutput, batch: Mapping):
         if self.config.use_return_dict:
-            loss, logits = outputs['loss'], outputs['logits']
-        else:
-            # loss is at index 0 in the output tuple, logits are at index 1
-            loss, logits = outputs[:2]
-        if self.z_loss == 0.0:
-            return loss
-
-        # Add a z_loss to the standard loss
-        logits_flat = logits.view(-1, logits.size(-1))
-        labels_flat = batch['labels'].view(-1)
-        log_z = torch.logsumexp(logits_flat[labels_flat != _HF_IGNORE_INDEX],
-                                dim=1)
-        log_z2 = log_z**2
-        z_loss = log_z2.mean() * self.z_loss
-        if self.config.use_return_dict:
-            outputs['loss'] += z_loss
             return outputs['loss']
-        else:
-            outputs[0] += z_loss
-            return outputs[0]
+        # loss is at index 0 in the output tuple, logits are at index 1
+        return outputs[:2]
     
     def flops_per_batch(self, batch: Mapping) -> int:
         bs = batch['input_ids'].shape[0]
         return self._fwd_flops * 3 * bs # approximately 1x for fwd + 2x for bwd
+        
