@@ -329,7 +329,7 @@ def flash_attn_fn(
             softmax_scale=softmax_scale,
             causal=reset_is_causal,
             return_attn_probs=needs_weights,
-            window_size=(sliding_window_size, sliding_window_size),
+            #window_size=(sliding_window_size, sliding_window_size),
             **alibi_kwargs)
     else:
         raise RuntimeError(
