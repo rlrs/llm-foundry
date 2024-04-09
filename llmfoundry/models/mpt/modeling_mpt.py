@@ -29,12 +29,6 @@ if is_flash_v2_installed():
     except Exception as e:
         pass#raise e
 
-if is_flash_v1_installed():
-    try:  # This try...except is needed because transformers requires it despite the 'if' statement above
-        from flash_attn import bert_padding
-    except Exception as e:
-        pass#raise e
-
 from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
