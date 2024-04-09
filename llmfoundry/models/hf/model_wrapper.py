@@ -48,9 +48,6 @@ class HuggingFaceModelWithFSDP(HuggingFaceModel):
             peft_config=peft_config,
             should_save_peft_only=True,
         )
-        self.z_loss = float(z_loss)
-        if self.z_loss < 0.0:
-            raise ValueError(f'z_loss(={z_loss}) cannot be negative.')
         
         n_params = sum(p.numel() for p in self.model.parameters())
         L, H, Q, T = self.model.config.num_hidden_layers, self.model.config.num_attention_heads, self.model.config.hidden_size // self.model.config.num_attention_heads, self.model.config.sliding_window
